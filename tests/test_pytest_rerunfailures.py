@@ -6,6 +6,13 @@ import pytest
 
 from pytest_rerunfailures import HAS_PYTEST_HANDLECRASHITEM
 
+try:
+    import pytest_timeout  # noqa: F401
+
+    has_timeout = True
+except ImportError:
+    has_timeout = False
+
 pytest_plugins = "pytester"
 
 has_xdist = HAS_PYTEST_HANDLECRASHITEM
@@ -382,14 +389,17 @@ def test_reruns_with_delay(testdir, delay_time):
 
     time.sleep = mock.MagicMock()
 
-    result = testdir.runpytest("--reruns", "3", "--reruns-delay", str(delay_time))
-
     if delay_time < 0:
-        result.stdout.fnmatch_lines(
-            "*UserWarning: Delay time between re-runs cannot be < 0. "
-            "Using default value: 0"
-        )
+        with pytest.warns(
+            UserWarning,
+            match="Delay time between re-runs cannot be < 0",
+        ):
+            result = testdir.runpytest(
+                "--reruns", "3", "--reruns-delay", str(delay_time)
+            )
         delay_time = 0
+    else:
+        result = testdir.runpytest("--reruns", "3", "--reruns-delay", str(delay_time))
 
     time.sleep.assert_called_with(delay_time)
 
@@ -409,14 +419,15 @@ def test_reruns_with_delay_marker(testdir, delay_time):
 
     time.sleep = mock.MagicMock()
 
-    result = testdir.runpytest()
-
     if delay_time < 0:
-        result.stdout.fnmatch_lines(
-            "*UserWarning: Delay time between re-runs cannot be < 0. "
-            "Using default value: 0"
-        )
+        with pytest.warns(
+            UserWarning,
+            match="Delay time between re-runs cannot be < 0",
+        ):
+            result = testdir.runpytest()
         delay_time = 0
+    else:
+        result = testdir.runpytest()
 
     time.sleep.assert_called_with(delay_time)
 
@@ -1407,3 +1418,42 @@ def test_force_reruns(testdir, mark_params):
 
     result = testdir.runpytest("--force-reruns", "3")
     assert_outcomes(result, passed=0, failed=1, rerun=3)
+
+
+@pytest.mark.skipif(not has_timeout, reason="requires pytest-timeout")
+def test_timeout_resets_on_rerun(testdir):
+    """Timeout should fire independently on each retry attempt.
+
+    This is a regression test for https://github.com/pytest-dev/pytest-rerunfailures/issues/99.
+    """
+    testdir.makepyfile(
+        """
+        import time
+
+        _call_count = 0
+
+        def test_hangs_then_passes():
+            global _call_count
+            _call_count += 1
+            if _call_count == 1:
+                time.sleep(10)  # killed by 2s timeout
+            # second attempt passes immediately
+        """
+    )
+    result = testdir.runpytest_subprocess("--reruns", "1", "--timeout", "2")
+    assert_outcomes(result, passed=1, rerun=1)
+
+
+@pytest.mark.skipif(not has_timeout, reason="requires pytest-timeout")
+def test_timeout_fires_on_every_rerun_attempt(testdir):
+    """A test that always hangs should be timed out on every attempt."""
+    testdir.makepyfile(
+        """
+        import time
+
+        def test_always_hangs():
+            time.sleep(10)  # killed by 2s timeout each time
+        """
+    )
+    result = testdir.runpytest_subprocess("--reruns", "1", "--timeout", "2")
+    assert_outcomes(result, passed=0, failed=1, rerun=1)

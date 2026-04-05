@@ -1,5 +1,4 @@
 import hashlib
-import importlib.metadata
 import os
 import platform
 import re
@@ -13,7 +12,6 @@ from contextlib import suppress
 
 import pytest
 from _pytest.outcomes import fail
-from packaging.version import parse as parse_version
 
 try:
     from xdist.newhooks import pytest_handlecrashitem
@@ -23,22 +21,6 @@ try:
 except ImportError:
     HAS_PYTEST_HANDLECRASHITEM = False
 
-
-def works_with_current_xdist():
-    """Return compatibility with installed pytest-xdist version.
-
-    When running tests in parallel using pytest-xdist < 1.20.0, the first
-    report that is logged will finish and terminate the current node rather
-    rerunning the test. Thus we must skip logging of intermediate results under
-    these circumstances, otherwise no test is rerun.
-
-    """
-    try:
-        d = importlib.metadata.distribution("pytest-xdist")
-    except importlib.metadata.PackageNotFoundError:
-        return None
-    else:
-        return parse_version(d.version) >= parse_version("1.20")
 
 
 RERUNS_DESC = "number of times to re-run failed tests. defaults to 0."
@@ -582,10 +564,12 @@ def _needs_rerun(item):
 def pytest_runtest_protocol(item, nextitem):
     """Run the test protocol, re-invoking the full hook chain on retries.
 
-    Changed from a non-wrapper hook to a hookwrapper so that each retry
-    re-invokes the full hook chain (e.g. pytest-timeout resets its timer).
-    The presence of execution_count on the item gates passthrough to prevent
-    recursion.
+    Implemented as a hookwrapper so that each retry re-invokes the full hook
+    chain.  This ensures that protocol-level hookwrappers from other plugins
+    (e.g. pytest-timeout) are executed independently for each attempt.
+
+    On recursive re-invocations from the retry loop, the hook detects the
+    existing execution_count attribute and yields immediately as a passthrough.
     """
     # Passthrough: re-invocation from retry loop below
     if hasattr(item, "execution_count"):
