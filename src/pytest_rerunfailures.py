@@ -13,7 +13,6 @@ from contextlib import suppress
 
 import pytest
 from _pytest.outcomes import fail
-from _pytest.runner import runtestprotocol
 from packaging.version import parse as parse_version
 
 try:
@@ -560,63 +559,65 @@ def pytest_runtest_makereport(item, call):
         item, result, call.excinfo
     )
 
+    # Set rerun metadata and transform outcome on intermediate failures.
+    if hasattr(item, "_reruns"):
+        result.rerun = item.execution_count - 1
+        if not _should_not_rerun(item, result, item._reruns):
+            result.outcome = "rerun"
 
+
+def _needs_rerun(item):
+    """Check whether the most recent attempt warrants a retry."""
+    failed = getattr(item, "_test_failed_statuses", {})
+    terminal = getattr(item, "_terminal_errors", {})
+    return (
+        item.execution_count <= item._reruns
+        and any(failed.values())
+        and not any(terminal.values())
+        and get_reruns_condition(item)
+    )
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
 def pytest_runtest_protocol(item, nextitem):
-    """
-    Run the test protocol.
+    """Run the test protocol, re-invoking the full hook chain on retries.
 
-    Note: when teardown fails, two reports are generated for the case, one for
-    the test case and the other for the teardown error.
+    Changed from a non-wrapper hook to a hookwrapper so that each retry
+    re-invokes the full hook chain (e.g. pytest-timeout resets its timer).
+    The presence of execution_count on the item gates passthrough to prevent
+    recursion.
     """
+    # Passthrough: re-invocation from retry loop below
+    if hasattr(item, "execution_count"):
+        yield
+        return
+
     reruns = get_reruns_count(item)
     if reruns is None:
         # global setting is not specified, and this test is not marked with
         # flaky
+        yield
         return
 
     # while this doesn't need to be run with every item, it will fail on the
     # first item if necessary
     check_options(item.session.config)
     delay = get_reruns_delay(item)
-    parallel = not is_master(item.config)
     db = item.session.config.failures_db
-    item.execution_count = db.get_test_failures(item.nodeid)
+    item.execution_count = db.get_test_failures(item.nodeid) + 1
+    item._reruns = reruns
     db.set_test_reruns(item.nodeid, reruns)
 
-    if item.execution_count > reruns:
-        return True
+    # First attempt: full hook chain fires (timeout, etc.)
+    yield
 
-    need_to_run = True
-    while need_to_run:
+    # Retry loop
+    while _needs_rerun(item):
+        time.sleep(delay)
+        _remove_cached_results_from_failed_fixtures(item)
+        _remove_failed_setup_state_from_session(item)
         item.execution_count += 1
-        item.ihook.pytest_runtest_logstart(nodeid=item.nodeid, location=item.location)
-        reports = runtestprotocol(item, nextitem=nextitem, log=False)
-
-        for report in reports:  # 3 reports: setup, call, teardown
-            report.rerun = item.execution_count - 1
-            if _should_not_rerun(item, report, reruns):
-                # last run or no failure detected, log normally
-                item.ihook.pytest_runtest_logreport(report=report)
-            else:
-                # failure detected and reruns not exhausted, since i < reruns
-                report.outcome = "rerun"
-                time.sleep(delay)
-
-                if not parallel or works_with_current_xdist():
-                    # will rerun test, log intermediate result
-                    item.ihook.pytest_runtest_logreport(report=report)
-
-                # cleanin item's cashed results from any level of setups
-                _remove_cached_results_from_failed_fixtures(item)
-                _remove_failed_setup_state_from_session(item)
-
-                break  # trigger rerun
-        else:
-            need_to_run = False
-
-        item.ihook.pytest_runtest_logfinish(nodeid=item.nodeid, location=item.location)
-
-    return True
+        item.ihook.pytest_runtest_protocol(item=item, nextitem=nextitem)
 
 
 def pytest_report_teststatus(report):
