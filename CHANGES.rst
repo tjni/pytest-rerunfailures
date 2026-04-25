@@ -7,6 +7,10 @@ Changelog
 - Fix missing teardown for session and module scoped fixtures when fixture teardown fails.
   Fixes `#314 <https://github.com/pytest-dev/pytest-rerunfailures/issues/314>`_.
 
+- Drop the ``pytest-xdist < 1.20`` compatibility shim and the ``packaging``
+  runtime dependency. Any pytest-xdist version compatible with the supported
+  pytest range is far above 1.20.
+
 
 16.1 (2025-10-10)
 -----------------

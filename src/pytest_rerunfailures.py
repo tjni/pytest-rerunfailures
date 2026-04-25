@@ -1,5 +1,4 @@
 import hashlib
-import importlib.metadata
 import os
 import platform
 import re
@@ -14,7 +13,6 @@ from contextlib import suppress
 import pytest
 from _pytest.outcomes import fail
 from _pytest.runner import runtestprotocol
-from packaging.version import parse as parse_version
 
 try:
     from xdist.newhooks import pytest_handlecrashitem
@@ -23,23 +21,6 @@ try:
     del pytest_handlecrashitem
 except ImportError:
     HAS_PYTEST_HANDLECRASHITEM = False
-
-
-def works_with_current_xdist():
-    """Return compatibility with installed pytest-xdist version.
-
-    When running tests in parallel using pytest-xdist < 1.20.0, the first
-    report that is logged will finish and terminate the current node rather
-    rerunning the test. Thus we must skip logging of intermediate results under
-    these circumstances, otherwise no test is rerun.
-
-    """
-    try:
-        d = importlib.metadata.distribution("pytest-xdist")
-    except importlib.metadata.PackageNotFoundError:
-        return None
-    else:
-        return parse_version(d.version) >= parse_version("1.20")
 
 
 RERUNS_DESC = "number of times to re-run failed tests. defaults to 0."
@@ -578,7 +559,6 @@ def pytest_runtest_protocol(item, nextitem):
     # first item if necessary
     check_options(item.session.config)
     delay = get_reruns_delay(item)
-    parallel = not is_master(item.config)
     db = item.session.config.failures_db
     item.execution_count = db.get_test_failures(item.nodeid)
     db.set_test_reruns(item.nodeid, reruns)
@@ -602,9 +582,8 @@ def pytest_runtest_protocol(item, nextitem):
                 report.outcome = "rerun"
                 time.sleep(delay)
 
-                if not parallel or works_with_current_xdist():
-                    # will rerun test, log intermediate result
-                    item.ihook.pytest_runtest_logreport(report=report)
+                # will rerun test, log intermediate result
+                item.ihook.pytest_runtest_logreport(report=report)
 
                 # cleanin item's cashed results from any level of setups
                 _remove_cached_results_from_failed_fixtures(item)
